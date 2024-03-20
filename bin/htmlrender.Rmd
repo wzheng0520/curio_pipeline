@@ -1,0 +1,314 @@
+---
+title: "`r params$sample`"
+date: "Analysis Date: `r Sys.Date()`"
+author: 
+  - "Tile ID: `r params$beadbarcode`"
+  - "Pipeline Version: Seeker v2.0.0"
+  - "Reference Genome: `r params$reference`"
+output: 
+  html_document:
+    keep_md: true
+    css: style.css
+params:
+  sample: ""
+  beadbarcode: ""
+  file_metrics: ""
+  file_matched_seurato: ""
+  file_variable_features_clusters: ""
+  file_variable_features_spatial_moransi: ""
+  file_read1_properStructure: ""
+  file_read1_improperStructure: ""
+  file_numReads_perBD: ""
+  file_numReads_perBB: ""
+  file_BB_BM_BD: ""
+  reference: ""
+  seekerexplorer: ""
+  scripts_folder: ""
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message=FALSE)
+library(Seurat)
+library(ggplot2)
+library(viridis)
+library(ggprism)
+library(knitr)
+library(kableExtra)
+library(RColorBrewer)
+library(fields)
+library(ggpubr)
+library(downloadthis)
+```
+
+```{r functions, echo=FALSE, warning = FALSE, comment=NA}
+gen_markers_bycluster<-function(variable_features_cluster){
+  markers_bycluster<-lapply(unique(variable_features_cluster$cluster), function(x){
+  genes<-variable_features_cluster[variable_features_cluster$cluster==x,]
+  genes.top<-genes[genes$p_val_adj<0.05,]
+  genes.top<-genes.top[order(genes.top$avg_log2FC, decreasing = T),]
+  });names(markers_bycluster)<-unique(variable_features_cluster$cluster)
+  markers_bycluster
+}
+
+dotplot_topn<-function(seuratO, markers_bycluster, n=5, group.by="SCT_snn_res.0.2"){
+  topn<-n
+  top_markers_bycluster<-lapply(markers_bycluster, function(x){
+    top<-x$gene[1:topn]
+  })
+  
+  col <- rev(designer.colors(col=brewer.pal(9, "Spectral")))
+  top_markers_bycluster<-unique(unlist(top_markers_bycluster))
+  top_markers_bycluster<-top_markers_bycluster[!is.na(top_markers_bycluster)]
+  
+  DotPlot(seuratO, feature=unique(unlist(top_markers_bycluster)), group.by = group.by)+
+    ggtitle("")+
+    theme(axis.text.y = element_text(face = "italic",size=10),axis.text.x = element_text(face = "italic",angle = 90, size=10, vjust=0.5, hjust=1),plot.title = element_text(hjust = 0.7, face="plain", size=20))+
+  ylab("Clusters")+xlab("Genes")+
+  scale_colour_gradientn(colors=c("#00DCF7","#00E79A"))+
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5)
+}
+
+show_condition_cluster_markers <- function(f) {
+  tryCatch(
+          {
+            cluster_markers<-read.table(file=f, sep="\t")
+            return(cluster_markers)
+          },
+           error = function(c) {
+             msg=conditionMessage(c)
+             print(paste0(msg, " ", f))
+             return(FALSE)
+           },
+           warning = function(c) "warning",
+           message = function(c) "message"
+  )
+}
+
+```
+
+<script>
+$(document).ready(function(){
+    $('[data-toggle="popover"]').popover();
+});
+</script>
+
+```{r numbers, sample quality, echo=FALSE, warning = FALSE, comment=NA}
+quality<-read.csv(params$file_metrics, header=T, row.name=1)
+
+numbers_interested<-c("Total_raw_fastq_readpairs", "Percent_readpairs_with_adapter", "Median_reads_perUMI", "Percent_barcodes_recovered", "Percent_proper_reads_matched_to_barcodes", "Percent_proper_reads_matched_to_barcodes_and_genic", "Median_percent_mitochondrial_UMI_perBead", "Median_percent_ribosomalProtein_UMI_perBead", "Median_percent_ribosomalRNA_UMI_perBead")
+
+numbers_interested_meta<-data.frame("def"=rep("", length(numbers_interested)), "action"=rep("", length(numbers_interested)))
+rownames(numbers_interested_meta)<-numbers_interested
+numbers_interested_meta["Total_raw_fastq_readpairs",]<-c("Total number of read pairs in FASTQ input", "If notably lower than expected, check if demultiplexing went successfully or consider resequencing.")
+numbers_interested_meta["Percent_readpairs_with_adapter",]<-c("% total read pairs with illumina adapters in read 1", "If high (>20%), perform an additional cleanup after library preparation (Step I. Library Cleanup and QC).")
+numbers_interested_meta["Median_reads_perUMI",]<-c("Median sequencing depth (Median number of uniquely mapped reads detected per bead / Median number of molecules detected per bead)", "This value refers to sequencing depth. A value of 8 or above is recommended to reach saturation (i.e. recovery of most molecules in the library). If value is <8 and deep sequencing is required for analysis, consider resequencing.")
+numbers_interested_meta["Percent_barcodes_recovered",]<-c("% bead barcodes on tile detected in sequencing data", "If notably lower than expected (<50% in the case of complete coverage of tile by tissue section), check if the correct Tile ID was used for analysis or if notable bead loss occurred during the workflow. This number also depends on the relative coverage of the tile by tissue.")
+numbers_interested_meta["Percent_proper_reads_matched_to_barcodes",]<-c("% reads with proper read 1 structure that match to bead barcode whitelist", "If low (<50%), check if the correct Tile ID was used for analysis.")
+numbers_interested_meta["Percent_proper_reads_matched_to_barcodes_and_genic",]<-c("% reads with proper barcode structure in read 1 and bead barcode matched to whitelist that uniquely mapped to genic region",
+                                                                                  "If low (<30%), check if the correct reference genome was used for analysis, or if tissue quality was compromised, or if there was notable DNA contamination. Longer read 2 length may help improve this metric.")
+numbers_interested_meta["Median_percent_mitochondrial_UMI_perBead",]<-c("Median % mitochondrial protein (excluding mitochondrial rRNA) molecule per bead", "High value (>20%) may suggest compromised tissue quality but also can be biological.")
+numbers_interested_meta["Median_percent_ribosomalProtein_UMI_perBead",]<-c("Median % ribosomal protein molecule per bead", "High value (>20%) may suggest compromised tissue quality but also can be biological.")
+numbers_interested_meta["Median_percent_ribosomalRNA_UMI_perBead",]<-c("Median % ribosomal RNA molecule per bead", "High value (>10%) may suggest compromised tissue quality.")
+numbers_interested_cleaned <- numbers_interested
+numbers_interested_cleaned <- gsub("_|\\.", " ", numbers_interested_cleaned)
+numbers_interested_cleaned <- gsub("matched and genic", "(matched and genic)",  numbers_interested_cleaned)
+numbers_interested_cleaned <- gsub("Percent|percent", "%",  numbers_interested_cleaned)
+numbers_interested_cleaned<-gsub(" per", " per ", numbers_interested_cleaned)
+numbers_interested_cleaned<-gsub(" ribosomalProtein", " ribosomal protein ", numbers_interested_cleaned)
+numbers_interested_cleaned<-gsub(" ribosomalRNA", " ribosomal RNA ", numbers_interested_cleaned)
+toupdate <- sapply(gregexpr("%", numbers_interested_cleaned, fixed=T), function(x) x[1])==1
+substr(numbers_interested_cleaned[toupdate], 3, 3) <- toupper(substr(numbers_interested_cleaned[toupdate], 3, 3))
+toprint <- data.frame(matrix(rep("", 2*length(numbers_interested)), ncol=2))
+colnames(toprint)<-c('Metrics', 'Values')
+
+toprint[,1] <- cell_spec(
+  numbers_interested_cleaned,
+  popover = spec_popover(
+    content = numbers_interested_meta[numbers_interested, "def"],
+    title = NULL,                          
+    position = rep("left", length(numbers_interested))
+ ))
+
+toprint[,2] <- cell_spec(
+  quality[numbers_interested, "Values"],
+  popover = spec_popover(
+    content = numbers_interested_meta[numbers_interested, "action"],
+    title = NULL,
+    position = rep("right", length(numbers_interested))
+))
+```
+<div style="margin-bottom:40px;">
+</div>
+
+## Quality Metrics
+<details>
+  <summary>**Actionable Quality Metrics**</summary>
+	<p>For verifying experimental and pipeline performance.</p>        
+</details>
+<p>Hover over table for metric definition and conditions for action</p>
+```{r Quality Metrics, echo=FALSE, warning = FALSE, comment=NA}
+kbl(toprint, escape = FALSE, booktabs=TRUE, centering=F, format = "html", table.attr = "style='width:70%;'", format.args = list(big.mark = ",")) %>%
+  kable_styling(full_width = TRUE, position = "center", bootstrap_options = c("hover", "condensed"), font_size = 16)
+```
+
+<div style="margin-bottom:10px;">
+</div>
+```{r data import for plots, echo=FALSE, warning = FALSE, comment=NA}
+seuratO<-readRDS(params$file_matched_seurato)
+cluster_markers<-show_condition_cluster_markers(params$file_variable_features_clusters)
+spatial_markers<-read.table(params$file_variable_features_spatial_moransi, sep="\t")
+```
+
+```{r determine tile size, echo=FALSE}
+tile_size = strtoi(quality["Total_barcodes_on_substrate", "Values", drop=F])/10^5
+if (tile_size > 1){
+        m=3.3
+        n=2.2
+        raster=FALSE
+}else{
+        m=1
+        n=1
+        raster=FALSE
+}
+```
+
+<details>
+  <summary>**Spatial Map of Quality Metrics**</summary>
+  	<p>Higher % expression of mitochondrial and ribosomal genes can be biological and may not always reflect tissue quality. Lack of structural patterns in quality metrics may not reflect run quality.</p>
+</details>
+```{r QC1, fig.align="left", fig.width=20*m, fig.height=6.2*m, echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+features<-c("log10_nCount_RNA", "log10_nFeature_RNA", "log10_numReads")
+titles<-c(expression('log'[10]*' (Number of UMI)'), expression('log'[10]*' (Number of genes)'), expression('log'[10]*' (Number of reads)'))
+col <- rev(designer.colors(col=brewer.pal(9, "Spectral")))
+a<-lapply(1:length(features), function(i){
+  FeaturePlot(seuratO, features = features[i],
+              reduction="SPATIAL", slot = "counts", order=T, pt.size = 0.05, raster=raster)&
+    xlab("X")&ylab("Y")&NoAxes()&ggtitle(titles[i])&
+    scale_colour_gradientn(colours = col)&
+    theme(plot.title = element_text(hjust = 0.5, face="plain",size=30*m),
+          legend.text=element_text(size=rel(1*m)),
+          legend.key.height = unit(1*m, 'cm'),
+	  legend.key.width = unit(1*m, 'cm'))
+})
+plotQC1 <- ggarrange(a[[1]], a[[2]], a[[3]], nrow = 1, ncol = 3)
+plotQC1
+```
+
+```{r QC2, fig.align="left", fig.width=20*m, fig.height=6.2*m, results='hide', echo=FALSE, message=FALSE, warning=FALSE}
+features<-c("percent.mt", "percent.rp", "pct_rrna")
+titles<-c("% Mitochondrial UMI", "% Ribosomal protein UMI", "% Ribosomal RNA UMI")
+col <- rev(designer.colors(col=brewer.pal(9, "Spectral")))
+b<-lapply(1:length(features), function(i){
+  low <- round(min(seuratO[[features[i]]]),2)
+  high <- round(max(seuratO[[features[i]]]),2)
+  col <- rev(designer.colors(col=brewer.pal(9, "Spectral")))
+  if (high==0){
+    FeaturePlot(seuratO, features = features[i],
+              reduction="SPATIAL", slot = "counts", order=T, pt.size = 0.1, raster=raster)&
+    xlab("X")&ylab("Y")&NoAxes()&ggtitle(titles[i])&
+    scale_colour_gradientn(colours = col)&
+      theme(plot.title = element_text(hjust = 0.5, face="plain",size=30*m),
+            legend.text=element_text(size=rel(1*m)),
+	    legend.key.height = unit(1*m, 'cm'),
+	    legend.key.width = unit(1*m, 'cm'))
+  }else{
+  FeaturePlot(seuratO, features = features[i],
+              reduction="SPATIAL", slot = "counts", order=T, pt.size = 0.1, raster=raster)&
+    xlab("X")&ylab("Y")&NoAxes()&ggtitle(titles[i])&
+    scale_colour_gradientn(colours = col,
+                           limits = c(low, high),
+                           breaks = seq(low, high, length.out=5),
+                           labels = round(seq(low, high, length.out=5)*100,))&
+        theme(plot.title = element_text(hjust = 0.5, face="plain",size=30*m),
+         legend.text=element_text(size=rel(0.8*m)),
+	 legend.key.height = unit(1*n, 'cm'),
+	 legend.key.width = unit(1*n, 'cm'))
+ }
+})
+plotQC2 <- ggarrange(b[[1]], b[[2]], b[[3]], nrow = 1, ncol = 3)
+plotQC2
+```
+
+## Spatial Map of Cell Types
+<details>
+  <summary>**Clusters on Dimension Reduced and Spatial Spaces**</summary>
+	<p>Dimension reduction (left) and spatial location (right) of beads colored by their cluster assignment. Dimension reduction was done by UMAP (Uniform Manifold Approximation and Projection) on top 30 PCs and clusters were identified via unsupervised graph-based clustering method.</p>
+</details>
+
+```{r Cluster_SPATIAL_combined, fig.align="left", echo=FALSE, fig.width=39*m, fig.height=18*m}
+qual_col_pals = brewer.pal.info[brewer.pal.info$category %in% c('qual','seq'),]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+plotUMAP <- DimPlot(seuratO, reduction = "umap", group.by = "SCT_snn_res.0.2", label = T, cols = col_vector, pt.size = 1.5, label.size = 18*n, repel = TRUE, raster=raster)&
+  xlab("UMAP1")&ylab("UMAP2")&ggtitle("")&
+  theme(plot.title = element_text(hjust = 0.5, face="bold",size=50*n),
+        axis.title.x =element_text(size=50*n, margin = margin(t = 10)),
+	axis.title.y =element_text(size=50*n, margin = margin(r = 10)),
+	axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+	axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+	legend.position="none",
+	axis.line=element_line(size=2))
+
+plotSPATIAL <- DimPlot(seuratO, group.by = "SCT_snn_res.0.2", reduction = "SPATIAL", cols = col_vector, pt.size = 1.5, raster=raster)&
+  NoAxes()&
+  ggtitle("")&
+  guides(color = guide_legend(override.aes = list(size = 10*n)))&
+  theme(plot.title = element_text(hjust = 0.5, face="bold",size=50*n),
+	axis.text=element_text(size=100*n),
+	legend.text=element_text(size=50*n),
+	legend.key.size = unit(2*n, "cm"),)&
+  labs(fill = "")&coord_fixed()
+
+plotUMAP_SPATIAL=plotUMAP+plotSPATIAL
+plotUMAP_SPATIAL
+```
+
+```{r plotSPATIAL_RCTD, fig.align="left", echo=FALSE, fig.width=18, fig.height=18}
+if(params$seekerexplorer == "rctd"){
+	qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+	col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+	plotSPATIAL_RCTD <- DimPlot(seuratO, group.by = "first_type", reduction = "SPATIAL", cols = col_vector, pt.size = 2)&
+  	NoAxes()&
+ 	ggtitle("")&
+  	guides(color = guide_legend(override.aes = list(size = 10)))&
+  	theme(plot.title = element_text(hjust = 0.5, face="bold",size=50),
+        axis.text=element_text(size=100),
+        legend.text=element_text(size=50),
+        legend.key.size = unit(2, "cm"),)&
+  	labs(fill = "")&coord_fixed()
+	plotSPATIAL_RCTD
+}
+```
+
+## Variable Genes
+<details>
+  <summary>**Top Cluster Defining Genes**</summary>
+  	<p>One-to-all Wilcoxon Rank Sum test was used to identify cluster defining genes. Cluster IDs are consistent with spatial map above. Shown are top 5 or all genes for each cluster that passed threshold, whichever fewer.</p>
+</details>
+
+```{r Top_differentially_expressed_genes_per_cluster, fig.align="left", fig.width=12, fig.height=5, echo=FALSE, warning=FALSE}
+if(is.logical(cluster_markers)){
+           print("No variable feature identified")
+}else{
+        markers_bycluster<-gen_markers_bycluster(cluster_markers)
+        plotDOT <- dotplot_topn(seuratO, markers_bycluster, n=5, group.by="SCT_snn_res.0.2")
+	plotDOT
+}
+```
+
+<details>
+  <summary>**Top 10 Spatially Variable Features**</summary>
+  	<p>Moran's I was used to measure spatial variability.</p>
+</details>
+
+```{r Top_spatially_variable_features, fig.align="left", fig.width=15*m, fig.height=8*m, echo=FALSE, message=FALSE, warning=FALSE}
+DefaultAssay(seuratO)<-"SCT"
+plotSPATIALFEATURE <- SpatialFeaturePlot(seuratO, features = rownames(spatial_markers)[1:10], ncol = 5, alpha = c(0.1, 1), max.cutoff = "q95", slot = "data", pt.size.factor = 1.6/m)&
+  theme(legend.title = element_text(colour="black", size = 12*m, face = "italic"),
+        legend.text = element_text(color="black", size=rel(0.8*m)),
+	legend.key.height = unit(0.7*n, 'cm'),
+        legend.key.width = unit(0.7*n, 'cm'),
+        plot.title = element_text(color="black",hjust=0.5,vjust=0.5,size=rel(1*n), face="italic"))
+plotSPATIALFEATURE
+```

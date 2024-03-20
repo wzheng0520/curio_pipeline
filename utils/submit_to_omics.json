@@ -1,0 +1,7 @@
+{
+    "input": "s3://curio-seeker-omics/datasets/150million/samplesheet.150m.omics.csv",
+    "outdir": "s3://curio-seeker-omics/results/150million/nf-tower",
+    "igenomes_base": "s3://curio-seeker-omics/igenomes",
+    "fastq_chunk_size": 5000000,
+    "bam_chunk_size": 5000000
+}

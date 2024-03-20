@@ -1,0 +1,25 @@
+name: "Curio Bioscience"                                
+output_dir: "."
+navbar:
+  title: "<img id=\"logo\" style=\"width: 110px;\" src=\"https://curiobiopublic.s3.us-west-1.amazonaws.com/Logo_Curio_Transparent_Nomargin.png\"/>"                            
+  type: inverse
+  right:
+          #- text: "FAQ"
+          #  #icon: fa-envelope-o
+          #  href: https://curiobioscience.com/
+          #- text: "Resources"
+          #  #icon: fa-envelope-o
+          #  href: https://curiobioscience.com/
+          #- text: "Seeker Explorer"
+          #  #icon: fa-envelope-o
+          #  href: https://curiobioscience.com/
+output:
+  html_document:
+    theme: paper
+    css: "styles.css"
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    toc_collapsed: false
+    smooth_scroll: true
+

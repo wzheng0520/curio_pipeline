@@ -1,0 +1,2 @@
+single_end,library,experiment_date,barcode_file,fastq_1,fastq_2,sample
+False,TO52_1,2022-02-14,s3://curio-seeker-omics/datasets/2billion/B0009_001_BeadBarcodes.txt,s3://curio-seeker-omics/datasets/2billion/TO52_1_R1.fastq.gz,s3://curio-seeker-omics/datasets/2billion/TO52_1_R2.fastq.gz,TO52_1

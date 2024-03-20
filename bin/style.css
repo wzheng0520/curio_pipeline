@@ -1,0 +1,132 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,400;1,300&display=swap');
+
+/*------------- Whole Document---------------- */
+body,h1,h2,h3,h4,h5,h6 {
+    font-family: 'Poppins', sans-serif;
+    color: #0A0112;
+}
+
+/*----------------ADDING WHITE SPACE-------------*/
+h1.title {
+  margin-top: 1em !important;
+  margin-bottom: 0.75em;
+  font-size: 25px;
+  color: #0A0112;
+}
+
+h2{
+    font-size: 25px;
+    margin-top:0.1em;
+    margin-bottom: 0.1em;
+    padding-top:0.1em;
+    padding-bottom: 0.1em;
+    color: #0A0112;
+}
+
+h4.author {
+  font-size: 16px;
+  color: #0A0112;
+}
+h4.date {
+  font-size: 16px;
+  color: #0A0112;
+}
+
+/*-Space Between TOC and Righthand side content on large screens-*/
+@media (min-width: 992px) {
+   .col-md-9 {
+     width: 75%;
+     padding-left: 1em !important;
+   }
+}
+
+p{ 
+    font-size: 14px;
+    color: #0A0112;
+    margin-left: 10px;
+}
+
+/*----------------TOC-------------*/
+.tocify {
+  width: 70% !important;
+  border: none;
+}
+
+.list-group-item {
+    color: #0A0112;
+    font-size: 17px;
+}
+
+.list-group-item.active {
+    color: #FFFFFF;
+    background-color: #0A0112;
+    border: none;
+}
+
+.list-group-item:hover, 
+.list-group-item.active:hover {
+    color: #00E79A;
+    background-color: #0A0112;
+}
+
+
+/*----------------NAVBAR-------------*/
+.navbar-inverse {
+  background-color: #0A0112;
+  font-size: 20px;
+  font-family: 'Poppins', sans-serif;
+}
+.navbar-inverse .navbar-brand {
+  color: #9d9d9d;
+}
+.navbar-inverse .navbar-nav>li>a {
+  color: #FFFFFF;
+}
+.navbar-inverse .navbar-nav>.active>a {
+  background-color: #0A0112;
+}
+
+/* Navbar Links when hovered*/
+.navbar-inverse .dropdown-menu>.active>a
+.navbar-inverse .navbar-nav>.active>a:hover,
+.navbar-inverse .navbar-nav:hover,
+.navbar-inverse .navbar-nav>li>a:hover,
+a.navbar-brand:hover {
+  color: #00E79A !important;
+  background-color: #0A0112;
+}
+
+/*----------------TOOLTIP-------------*/
+.popover {
+    background: #0A0112;
+    max-width: 300px;
+}
+.popover-content {
+    font-size: 14px;
+    color: #FFFFFF;
+}
+.popover.right .arrow:after {
+  border-right-color: #0A0112;
+}
+.popover.left .arrow:after {
+  border-left-color: #0A0112;
+}
+
+/*----------------SUMMARY-------------*/
+summary{
+    color: #0A0112;
+    padding: 0.3em;
+    background: #FFFFFF;
+    margin-bottom: .1em;
+    cursor: pointer;
+    border-radius: .2em;
+    font-weight: plain;
+    font-size: 17px;
+    transition: background-color .3s;
+}
+summary:hover{
+    color:#00E79A;
+}
+summary:active{
+    color:#00E79A;
+}

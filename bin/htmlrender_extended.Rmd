@@ -1,0 +1,723 @@
+---
+title: "`r params$sample`"
+date: "Analysis Date: `r Sys.Date()`"
+author:
+  - "Tile ID: `r params$beadbarcode`"
+  - "Pipeline Version: Seeker v2.0.0"
+  - "Reference Genome: `r params$reference`"
+output: 
+  html_document:
+    keep_md: true
+    css: style.css
+params:
+  sample: ""
+  beadbarcode: ""
+  file_metrics: ""
+  file_matched_seurato: ""
+  file_variable_features_clusters: ""
+  file_variable_features_spatial_moransi: ""
+  file_read1_properStructure: ""
+  file_read1_improperStructure: ""
+  file_numReads_perBD: ""
+  file_numReads_perBB: ""
+  file_BB_BM_BD: ""
+  reference: ""
+  seekerexplorer: ""
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message=FALSE)
+library(Seurat)
+library(ggplot2)
+library(viridis)
+library(ggprism)
+library(knitr)
+library(kableExtra)
+library(RColorBrewer)
+library(fields)
+library(ggpubr)
+library(downloadthis)
+library(arrow)
+```
+
+```{r functions, echo=FALSE, warning = FALSE, results='hide', comment=NA}
+gen_markers_bycluster<-function(variable_features_cluster){
+  markers_bycluster<-lapply(unique(variable_features_cluster$cluster), function(x){
+  genes<-variable_features_cluster[variable_features_cluster$cluster==x,]
+  genes.top<-genes[genes$p_val_adj<0.05,]
+  genes.top<-genes.top[order(genes.top$avg_log2FC, decreasing = T),]
+  });names(markers_bycluster)<-unique(variable_features_cluster$cluster)
+  markers_bycluster
+}
+
+dotplot_topn<-function(seuratO, markers_bycluster, n=5, group.by="SCT_snn_res.0.2"){
+  topn<-n
+  top_markers_bycluster<-lapply(markers_bycluster, function(x){
+    top<-x$gene[1:topn]
+  })
+  
+  col <- rev(designer.colors(col=brewer.pal(9, "Spectral")))
+  top_markers_bycluster<-unique(unlist(top_markers_bycluster))
+  top_markers_bycluster<-top_markers_bycluster[!is.na(top_markers_bycluster)]
+  
+  DotPlot(seuratO, feature=unique(unlist(top_markers_bycluster)), group.by = group.by)+
+    ggtitle("Top differentially expressed features per cluster")+
+    theme(axis.text.y = element_text(face = "italic",size=10),axis.text.x = element_text(face = "italic",angle = 90, size=10, vjust=0.5, hjust=1),plot.title = element_text(hjust = 0.7, face="plain", size=20))+
+  ylab("Clusters")+xlab("Genes")+
+  scale_colour_gradientn(colors=c("#00DCF7","#00E79A"))+
+  geom_point(aes(size=pct.exp), shape = 21, colour="black", stroke=0.5)
+}
+
+show_condition_cluster_markers <- function(f) {
+  tryCatch(
+          {
+            cluster_markers<-read.table(file=f, sep="\t")
+            return(cluster_markers)
+          },
+           error = function(c) {
+             msg=conditionMessage(c)
+             print(paste0(msg, " ", f))
+             return(FALSE)
+           },
+           warning = function(c) "warning",
+           message = function(c) "message"
+  )
+}
+
+```
+
+<script>
+$(document).ready(function(){
+    $('[data-toggle="popover"]').popover();
+});
+</script>
+
+```{r data import, sample quality, echo=FALSE, results='hide', warning = FALSE, comment=NA}
+quality<-read.csv(params$file_metrics, header=T, row.name=1)
+
+# Missing:"Percent_proper_reads_in_genes"
+numbers_interested<-c("Total_raw_fastq_readpairs", "Percent_readpairs_proper_structure", "Percent_readpairs_with_adapter", "Percent_adapter_free_readpairs_proper_structure", "Total_barcodes_on_substrate", "Percent_barcodes_recovered", "Percent_proper_reads_matched_to_barcodes", "Percent_proper_reads_matched_to_barcodes_and_genic", "Percent_raw_reads_useful_matched_and_genic", "Median_reads_perUMI", "Total_genes_in_matched_bead_barcodes", "Total_UMI_in_matched_bead_barcodes", "Median_reads_perBead", "Median_UMI_perBead", "Median_gene_perBead", "Top10_percent_reads_perBead", "Top10_percent_UMI_perBead", "Top10_percent_gene_perBead", "Median_percent_mitochondrial_UMI_perBead", "Median_percent_ribosomalProtein_UMI_perBead", "Median_percent_ribosomalRNA_UMI_perBead","Number_of_peaks")
+
+numbers_interested_meta<-data.frame("def"=rep("", length(numbers_interested)), "action"=rep("", length(numbers_interested)))
+rownames(numbers_interested_meta)<-numbers_interested
+numbers_interested_meta["Total_raw_fastq_readpairs",]<-c("Total number of read pairs in FASTQ input", "If notably lower than expected, check if demultiplexing went successfully or consider resequencing.")
+numbers_interested_meta["Percent_readpairs_proper_structure",]<-c("% total read pairs with correct barcode structure in read 1", "-")
+numbers_interested_meta["Percent_readpairs_with_adapter",]<-c("% total read pairs with illumina adapters in read 1", "If high (>20%), perform an additional cleanup after library preparation (Step I. Library Cleanup and QC).")
+numbers_interested_meta["Percent_adapter_free_readpairs_proper_structure",]<-c("% illumina-adapter-free read pairs with correct barcode structure in read 1", "-")
+numbers_interested_meta["Total_barcodes_on_substrate",]<-c("Number of bead barcodes on tile (from ${Tile_ID}_BeadBarcodes.txt whitelist)", "-")
+numbers_interested_meta["Percent_barcodes_recovered",]<-c("% bead barcodes on tile detected in sequencing data", "If notably lower than expected (<50% in the case of complete coverage of tile by tissue section), check if the correct Tile ID was used for analysis or if notable bead loss occurred during the workflow. This number also depends on the relative coverage of the tile by tissue.")
+numbers_interested_meta["Percent_proper_reads_matched_to_barcodes",]<-c("% reads with proper read 1 structure that match to bead barcode whitelist", "If low (<50%), check if the correct Tile ID was used for analysis.")
+numbers_interested_meta["Percent_proper_reads_matched_to_barcodes_and_genic",]<-c("% reads with proper barcode structure in read 1 and bead barcode matched to whitelist that uniquely mapped to genic region",
+                                                                                  "If low (<30%), check if the correct reference genome was used for analysis, or if tissue quality was compromised, or if there was notable DNA contamination. Longer read 2 length may help improve this metric.")
+numbers_interested_meta["Percent_raw_reads_useful_matched_and_genic",]<-c("% total reads that are with proper barcode structure in read 1 and bead barcode matched to whitelist and uniquely mapped to genic region", "-")
+numbers_interested_meta["Median_reads_perUMI",]<-c("Median sequencing depth (Median number of uniquely mapped reads detected per bead / Median number of molecules detected per bead)", "This value refers to sequencing depth. A value of 8 or above is recommended to reach saturation (i.e. recovery of most molecules in the library). If value is <8 and deep sequencing is required for analysis, consider resequencing.")
+numbers_interested_meta["Total_genes_in_matched_bead_barcodes",]<-c("Total number of genes found in all matched bead barcodes", "-")
+numbers_interested_meta["Total_UMI_in_matched_bead_barcodes",]<-c("Total number of molecules found in all matched bead barcodes", "-")
+numbers_interested_meta["Median_reads_perBead",]<-c("Median number of uniquely mapped reads detected per bead", "-")
+numbers_interested_meta["Median_UMI_perBead",]<-c("Median number of molecules detected per bead", "-")
+numbers_interested_meta["Median_gene_perBead",]<-c("Median number of genes detected per bead", "-")
+numbers_interested_meta["Top10_percent_reads_perBead",]<-c("Number of uniquely mapped reads detected on the bead ranked at top 10 percentile", "-")
+numbers_interested_meta["Top10_percent_UMI_perBead",]<-c("Number of molecules detected on the bead ranked at top 10 percentile", "-")
+numbers_interested_meta["Top10_percent_gene_perBead",]<-c("Number of genes detected on the bead ranked at top 10 percentile", "-")
+numbers_interested_meta["Median_percent_mitochondrial_UMI_perBead",]<-c("Median % mitochondrial protein (excluding mitochondrial rRNA) molecule per bead", "High value (>20%) may suggest compromised tissue quality but also can be biological.")
+numbers_interested_meta["Median_percent_ribosomalProtein_UMI_perBead",]<-c("Median % ribosomal protein molecule per bead", "High value (>20%) may suggest compromised tissue quality but also can be biological.")
+numbers_interested_meta["Median_percent_ribosomalRNA_UMI_perBead",]<-c("Median % ribosomal RNA molecule per bead", "High value (>10%) may suggest compromised tissue quality.")
+numbers_interested_meta["Number_of_peaks",]<-c("-", "-")
+
+#toprint<-quality[numbers_interested, "Values", drop=F]
+#colnames(toprint)<-NULL
+#rownames(toprint)<-gsub("_|\\.", " ", rownames(toprint))
+#rownames(toprint)<-gsub("matched and genic", "(matched and genic)", rownames(toprint))
+#rownames(toprint)<-gsub("Percent|percent", "%", rownames(toprint))
+#rownames(toprint)<-gsub(" per", " per ", rownames(toprint))
+#rownames(toprint)<-gsub(" ribosomalProtein", " ribosomal protein ", rownames(toprint))
+#rownames(toprint)<-gsub(" ribosomalRNA", " ribosomal RNA ", rownames(toprint))
+#toupdate <- sapply(gregexpr("%", rownames(toprint), fixed=T), function(x) x[1])==1
+#substr(rownames(toprint)[toupdate], 3, 3) <- toupper(substr(rownames(toprint)[toupdate], 3, 3))
+#toprint[-grep(pattern="\\%", rownames(toprint)),1]<-as.character(round(toprint[-grep(pattern="\\%", rownames(toprint)),1],0)[,1])
+#
+#toprint[,1] <- cell_spec(
+#  numbers_interested,
+#  popover = spec_popover(
+#    content = numbers_interested_meta[numbers_interested, "def"],
+#    title = NULL,                          
+#    position = rep("left", length(numbers_interested))
+# ))
+#
+#toprint[,2] <- cell_spec(
+#  quality[numbers_interested, "Values"],
+#  popover = spec_popover(
+#    content = numbers_interested_meta[numbers_interested, "action"],
+#    title = NULL,
+#    position = rep("right", length(numbers_interested))
+#))
+numbers_interested_cleaned <- numbers_interested
+numbers_interested_cleaned <- gsub("_|\\.", " ", numbers_interested_cleaned)
+numbers_interested_cleaned <- gsub("matched and genic", "(matched and genic)",  numbers_interested_cleaned)
+numbers_interested_cleaned <- gsub("Percent|percent", "%",  numbers_interested_cleaned)
+numbers_interested_cleaned<-gsub(" per", " per ", numbers_interested_cleaned)
+numbers_interested_cleaned<-gsub(" ribosomalProtein", " ribosomal protein ", numbers_interested_cleaned)
+numbers_interested_cleaned<-gsub(" ribosomalRNA", " ribosomal RNA ", numbers_interested_cleaned)
+toupdate <- sapply(gregexpr("%", numbers_interested_cleaned, fixed=T), function(x) x[1])==1
+substr(numbers_interested_cleaned[toupdate], 3, 3) <- toupper(substr(numbers_interested_cleaned[toupdate], 3, 3))
+toprint <- data.frame(matrix(rep("", 2*length(numbers_interested)), ncol=2))
+colnames(toprint)<-c('Metrics', 'Values')
+
+toprint[,1] <- cell_spec(
+  numbers_interested_cleaned,
+  popover = spec_popover(
+    content = numbers_interested_meta[numbers_interested, "def"],
+    title = NULL,                          
+    position = rep("left", length(numbers_interested))
+ ))
+
+toprint[,2] <- cell_spec(
+  quality[numbers_interested, "Values"],
+  popover = spec_popover(
+    content = numbers_interested_meta[numbers_interested, "action"],
+    title = NULL,
+    position = rep("right", length(numbers_interested))
+))
+```
+
+## Quality Metrics
+<details>
+  <summary>**Actionable Quality Metrics**</summary>
+	<p>For verifying experimental and pipeline performance.</p>
+</details>
+<p>Hover over table for metric definition and conditions for action</p>
+```{r Quality Metrics, echo=FALSE, warning = FALSE, comment=NA}
+#kbl(toprint, align = "r", escape = FALSE, booktabs=TRUE, centering=F, format = "html", table.attr = "style='width:70%;'", format.args = list(big.mark = ",")) %>%
+kbl(toprint, escape = FALSE, booktabs=TRUE, centering=F, format = "html", table.attr = "style='width:70%;'", format.args = list(big.mark = ",")) %>%
+  kable_styling(full_width = TRUE, position = "center", bootstrap_options = c("hover", "condensed"), font_size = 16)
+```
+
+```{r data import for plots, echo=FALSE, results='hide', warning = FALSE, comment=NA}
+seuratO<-readRDS(params$file_matched_seurato)
+cluster_markers<-show_condition_cluster_markers(params$file_variable_features_clusters)
+spatial_markers<-read.table(params$file_variable_features_spatial_moransi, sep="\t")
+read1_properStructure = as.data.frame(read.table(params$file_read1_properStructure, sep="\t", header=T, row.names = 1))
+read1_improperStructure = as.data.frame(read.table(params$file_read1_improperStructure, sep="\t", header=T, row.names = 1))
+numReads_perBD <- read.table(params$file_numReads_perBD, header=F, sep="\t", stringsAsFactors = F)
+colnames(numReads_perBD) <- c("Distance", "numReads")
+numReads_perBD$pct_numReads = 100*round(numReads_perBD$numReads/sum(numReads_perBD$numReads),4)
+#numReads_perBD$numReads = numReads_perBD$numReads/10^6
+```
+
+```{r barcode matching data import, echo=FALSE}
+#barcode_matching_details <- read.table(params$file_BB_BM_BD, sep="\t", header=T, stringsAsFactors = F)
+DS <- arrow::open_dataset(sources = params$file_BB_BM_BD)
+SO <- Scanner$create(DS)
+AT <- SO$ToTable()
+barcode_matching_details <- data.frame(AT[,c("BB","BM","BD")])
+barcode_matching_details <- barcode_matching_details[!is.na(barcode_matching_details$BD),]
+#print(head(barcode_matching_details))
+```
+
+```{r determine tile size, echo=FALSE}
+tile_size = strtoi(quality["Total_barcodes_on_substrate", "Values", drop=F])/10^5
+if (tile_size > 1){
+        m=3.3
+        n=2.2
+        raster=FALSE
+}else{
+        m=1
+        n=1
+        raster=FALSE
+}
+```
+
+<div style="margin-bottom:20px;">
+</div>
+
+<details>
+  <summary>**Spatial Map of Quality Metrics**</summary>
+  	<p>Higher % expression of mitochondrial and ribosomal genes can be biological and may not always reflect tissue quality. Lack of structural patterns in quality metrics may not reflect run quality.</p>
+</details>
+```{r QC1, fig.align="left", fig.width=20*m, fig.height=6.2*m, echo=FALSE, results='hide', warning=FALSE, message=FALSE}
+features<-c("log10_nCount_RNA", "log10_nFeature_RNA", "log10_numReads")
+titles<-c(expression('log'[10]*' (Number of UMI)'), expression('log'[10]*' (Number of genes)'), expression('log'[10]*' (Number of reads)'))
+col <- rev(designer.colors(col=brewer.pal(9, "Spectral")))
+a<-lapply(1:length(features), function(i){
+  FeaturePlot(seuratO, features = features[i],
+              reduction="SPATIAL", slot = "counts", order=T, pt.size = 0.05, raster=raster)&
+    xlab("X")&ylab("Y")&NoAxes()&ggtitle(titles[i])&
+    scale_colour_gradientn(colours = col)&
+    theme(plot.title = element_text(hjust = 0.5, face="plain",size=30*m),
+          legend.text=element_text(size=rel(1*m)),
+          legend.key.height = unit(1*m, 'cm'),
+          legend.key.width = unit(1*m, 'cm'))
+})
+plotQC1 <- ggarrange(a[[1]], a[[2]], a[[3]], nrow = 1, ncol = 3)
+plotQC1
+```
+
+```{r QC2, fig.align="left", fig.width=20*m, fig.height=6.2*m, results='hide', echo=FALSE, message=FALSE, warning=FALSE}
+features<-c("percent.mt", "percent.rp", "pct_rrna")
+titles<-c("% Mitochondrial UMI", "% Ribosomal protein UMI", "% Ribosomal RNA UMI")
+col <- rev(designer.colors(col=brewer.pal(9, "Spectral")))
+b<-lapply(1:length(features), function(i){
+  low <- round(min(seuratO[[features[i]]]),2)
+  high <- round(max(seuratO[[features[i]]]),2)
+  col <- rev(designer.colors(col=brewer.pal(9, "Spectral")))
+  if (high==0){
+    FeaturePlot(seuratO, features = features[i],
+              reduction="SPATIAL", slot = "counts", order=T, pt.size = 0.1, raster=raster)&
+    xlab("X")&ylab("Y")&NoAxes()&ggtitle(titles[i])&
+    scale_colour_gradientn(colours = col)&
+      theme(plot.title = element_text(hjust = 0.5, face="plain",size=30*m),
+            legend.text=element_text(size=rel(1*m)),
+            legend.key.height = unit(1*m, 'cm'),
+            legend.key.width = unit(1*m, 'cm'))
+  }else{
+  FeaturePlot(seuratO, features = features[i],
+              reduction="SPATIAL", slot = "counts", order=T, pt.size = 0.1, raster=raster)&
+    xlab("X")&ylab("Y")&NoAxes()&ggtitle(titles[i])&
+    scale_colour_gradientn(colours = col,
+                           limits = c(low, high),
+                           breaks = seq(low, high, length.out=5),
+                           labels = round(seq(low, high, length.out=5)*100,0))&
+        theme(plot.title = element_text(hjust = 0.5, face="plain",size=30*m),
+         legend.text=element_text(size=rel(0.8*m)),
+         legend.key.height = unit(1*n, 'cm'),
+         legend.key.width = unit(1*n, 'cm'))
+ }
+})
+plotQC2 <- ggarrange(b[[1]], b[[2]], b[[3]], nrow = 1, ncol = 3)
+plotQC2
+```
+
+## Kneeplot
+```{r kneeplot, fig.align="center", echo=FALSE, results='hide', warning=FALSE, fig.width=6, fig.height=5}
+r <- cumsum(sort(seuratO$numReads, decreasing=TRUE))/10^6
+u <- cumsum(sort(seuratO$nCount_RNA, decreasing=TRUE))/10^6
+df <- data.frame("order"=1:length(r),"numReads"=r,"numUMI"=u)
+rm(list=c("r","u"))
+
+kneeplot <- ggplot(df, aes(x=order))& 
+  geom_point(aes(y = numReads, color = "black"), size=0.01)&
+  geom_point(aes(y = numUMI, color="gray"), size=0.01)&
+  xlab("Beadbarcodes ranked by read / UMI")&
+  ylab("Cumulative read / UMI (million)")&
+  geom_vline(aes(xintercept=quality['Total_barcodes_included_by_knee', "Values"], color = "#d1495b"),linetype="dashed", size=0.5, key_glyph = "rect")&
+  ggtitle("Cumulative read / UMI for matched beadbarcodes")&
+  theme_bw()&
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=10),
+        axis.title=element_text(size=12),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        legend.position=c(0.08,0.9),
+        legend.key = element_rect(colour = NA, fill = NA),
+        legend.key.height= unit(0.5, 'cm'),
+        legend.key.width= unit(0.5, 'cm'),
+        legend.background=element_rect(colour = NA, fill= NA),
+        legend.title=element_blank(),
+        legend.text=element_text(size=10))&
+  scale_color_manual(name="",
+                     values = c("black","gray","#d1495b"),
+                     breaks = c("black","gray","#d1495b"),
+                     labels = c("Read", "UMI","Knee"))
+  scale_x_continuous(breaks = round(seq(0, nrow(df), length.out=5),0))
+rm(list=c("df"))
+print(kneeplot)
+```
+
+## Sensitivity
+<details>
+  <summary>**UMI**</summary>
+</details>
+
+```{r sensitivity UMI, fig.align="center", echo=FALSE, results='hide', warning=FALSE, fig.width=6, fig.height=5}
+# Calculate cutoffs for sensitivity plots
+cutoff_log10_UMI <- quality["cutoff_log10_UMI","Values"]
+names_high<-names(seuratO$log10_nCount_RNA)[seuratO$log10_nCount_RNA>=cutoff_log10_UMI]
+names_low<-names(seuratO$log10_nCount_RNA)[seuratO$log10_nCount_RNA<cutoff_log10_UMI]
+knee_bead <- names(sort(seuratO$log10_nCount_RNA[names_high], decreasing = F))[1]
+
+# UMI histogram
+ymax <- max(seuratO$log10_nCount_RNA)*1.1
+plotUMI <- ggplot(data.frame(seuratO$log10_nCount_RNA), aes(x=seuratO.log10_nCount_RNA))&
+  geom_histogram(binwidth=0.03, color="gray", fill="white")&
+  xlab("log10 (Number of UMI)")&
+  ylab("Number of beadbarcodes")&
+  ggtitle("UMI per beadbarcode\n(Calculated on beadbarcodes to the right of threshold)")&
+  scale_x_continuous(breaks = seq(0, ymax, by=0.5), 
+                     labels = seq(0, ymax, by=0.5),
+                     limits = c(0, ymax))&
+  theme_bw()&
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=10),
+        axis.title=element_text(size=12),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        legend.position=c(0.1,0.9),
+        legend.key = element_rect(colour = NA, fill = NA),
+        legend.key.height= unit(0.5, "cm"),
+        legend.key.width= unit(0.5, "cm"),
+        legend.background=element_rect(colour = NA, fill= NA),
+        legend.title=element_blank(),
+        legend.text=element_text(size=10))&
+  geom_vline(aes(xintercept=cutoff_log10_UMI, color = "#d1495b"),
+             linetype="dashed", size=0.5, key_glyph = "rect")&
+  geom_vline(aes(xintercept=log10(quality['Median_UMI_perBead', "Values"]), color = "navy"),
+             linetype=1, size=1, key_glyph = "rect")&
+  geom_vline(aes(xintercept=log10(quality['Top10_percent_UMI_perBead', "Values"]), color = "cyan"),
+             linetype=1, size=1,key_glyph = "rect")&
+  scale_colour_manual(name = "", 
+                      values = c("#d1495b", "navy", "cyan"),
+                      breaks = c("#d1495b", "navy", "cyan"),
+                      labels = c("Threshold", "Median", "Top10 %"))
+print(plotUMI)
+```
+
+<details>
+  <summary>**Genes**</summary>
+</details>
+```{r sensitivity gene, fig.align="center", echo=FALSE, results='hide', warning=FALSE, fig.width=6, fig.height=5}
+# Gene histogram
+ymax <- max(seuratO$log10_nFeature_RNA)*1.1
+plotGENE <- ggplot(data.frame(seuratO$log10_nFeature_RNA), aes(x=seuratO.log10_nFeature_RNA))&
+  geom_histogram(binwidth=0.03, color="gray", fill="white")&
+  xlab("log10 (Number of genes)")&
+  ylab("Number of beadbarcodes")&
+  ggtitle("Genes per beadbarcode\n(Calculated on beadbarcodes to the right of threshold)")&
+  scale_x_continuous(breaks = seq(0, ymax, by=0.5), 
+                     labels = seq(0, ymax, by=0.5),
+                     limits = c(0, ymax))&
+  theme_bw()&
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=10),
+        axis.title=element_text(size=12),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        legend.position=c(0.1,0.9),
+        legend.key = element_rect(colour = NA, fill = NA),
+        legend.key.height= unit(0.5, "cm"),
+        legend.key.width= unit(0.5, "cm"),
+        legend.background=element_rect(colour = NA, fill= NA),
+        legend.title=element_blank(),
+        legend.text=element_text(size=10))&
+  geom_vline(aes(xintercept=seuratO$log10_nFeature_RNA[knee_bead], color = "#d1495b"),
+             linetype="dashed", size=0.5, key_glyph = "rect")&
+  geom_vline(aes(xintercept=log10(quality['Median_gene_perBead', "Values"]), color = "navy"),
+             linetype=1, size=1, key_glyph = "rect")&
+  geom_vline(aes(xintercept=log10(quality['Top10_percent_gene_perBead', "Values"]), color = "cyan"),
+             linetype=1, size=1,key_glyph = "rect")&
+  scale_colour_manual(name = "", 
+                      values = c("#d1495b", "navy", "cyan"),
+                      breaks = c("#d1495b", "navy", "cyan"),
+                      labels = c("Threshold", "Median", "Top10 %")) 
+print(plotGENE)
+```
+
+## Barcode Matching Quality
+```{r Cell barcode mismatch QC, echo=FALSE, results='hide', warning=FALSE}
+DS <- arrow::open_dataset(sources = params$file_numReads_perBB)
+SO <- Scanner$create(DS)
+AT <- SO$ToTable()
+numReads_perBB <- data.frame(AT)
+colnames(numReads_perBB) = c("BB","numReads")
+print(head(numReads_perBB))
+
+
+len_barcode = nchar(barcode_matching_details[1,1])
+len_barcode2 = 6
+len_barcode1 = len_barcode-len_barcode2
+
+if(len_barcode<14){
+  numReads_perBB$BB <- sapply(numReads_perBB$BB,  function(x) 
+    paste0(substr(x,1,len_barcode1),substr(x,9,14)))
+}
+
+barcode_matching_merged = merge(numReads_perBB, barcode_matching_details, by = "BB", all.x = TRUE)
+total_reads = sum(barcode_matching_merged$numReads)
+total_reads_bydist = aggregate(numReads ~ BD, barcode_matching_merged, sum)
+total_reads_bydist$numReads = total_reads_bydist$numReads/10^6
+
+#print(table(barcode_matching_merged$BD))
+barcode_matching_merged_nozero = barcode_matching_merged[barcode_matching_merged$BD>0,]
+
+o <- t(apply(barcode_matching_merged_nozero, MARGIN = 1, function(x){
+  m <- which(unlist(strsplit(x["BB"], split="")) != unlist(strsplit(x["BM"], split="")))
+  list_mismatch = rep(0, len_barcode)
+  list_mismatch[m] = list_mismatch[m]+1*as.numeric(x["numReads"])
+  list_mismatch
+}))
+o <- round(100*colSums(o)/total_reads,1)
+write.table(o, file.path(paste0(sample,"_Beadbarcode_mismatch_frequency.txt")), sep="\t", row.names = FALSE)
+```
+
+<details>
+  <summary>**Per Base Mismatch Frequency**</summary>
+  	<p>Mismatch usually peaks at base 3, 4, 5, and 12. If mismatches rate seems constant across all bases, an incorrect whitelist might be used or consider repeating library prep.</p> 
+</details>
+```{r Beadbarcode mismatch frequency, fig.align='center', echo=FALSE, fig.width=6, fig.height=4, echo=FALSE, results='hide', warning=FALSE}
+plotBBMISMATCHFREQ <- ggplot(data.frame(o),aes(seq_along(o),o))&
+  geom_bar(stat="identity", aes(y=o, fill=c(rep("deepskyblue3", len_barcode1), rep("deepskyblue4", len_barcode2))),
+           color="deepskyblue4",
+           width=0.8)&
+  xlab("First n base of beadbarcode")&
+  ylab("% Matched reads")&
+  ggtitle("Beadbarcode mismatch frequency")&
+  scale_x_continuous(breaks=1:len_barcode, labels=1:len_barcode)&
+  theme_bw()&
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=10),
+        axis.title=element_text(size=12),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        legend.position=c(0.85, 0.85))&
+  scale_fill_manual(name="", values=c('deepskyblue3','deepskyblue4'), labels=c('Beadbarcode 1','Beadbarcode 2'))
+print(plotBBMISMATCHFREQ)
+```
+
+<details>
+  <summary>**Per Read Hamming Distance Distribution**</summary>
+	<p>The majority of the reads should have hamming distance = 0. If not, an incorrect whitelist might be used or consider repeating library prep.</p>
+</details>
+```{r Beadbarcode hamming distance distribution, fig.align='center', echo=FALSE, fig.width=6, fig.height=4, echo=FALSE, results='hide', warning=FALSE}
+plotHammingREADS <- ggplot(numReads_perBD, aes(Distance,pct_numReads))&
+  geom_bar(stat="identity", fill = "#FFDB6D", color = "#C4961A",
+           width=0.8)&
+  xlab("Hamming distance")&
+  #ylab("Number of reads (million)")&
+  ylab("% Proper structure and matched reads")&
+  ggtitle("Hamming distance (reads)")&
+  scale_x_continuous(breaks=0:len_barcode, labels=0:len_barcode, limits = c(-0.4,len_barcode+0.4))&
+  scale_y_continuous(breaks = round(seq(0, max(numReads_perBD$pct_numReads)*1.1, length.out=5),2), labels=round(seq(0, max(numReads_perBD$pct_numReads)*1.1, length.out=5),2), limits = c(0,max(numReads_perBD$pct_numReads)*1.1))&
+  theme_bw()&
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=10),
+        axis.title=element_text(size=12),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 5, r = 0, b = 0, l = 0)))
+print(plotHammingREADS)
+```
+
+<details>
+  <summary>**Per Whitelisted Barcode Hamming Distance Distribution**</summary>
+</details>
+```{r hamming dist whitelist barcodes, fig.align='center',echo=FALSE, fig.width=6, fig.height=4, echo=FALSE, results='hide', warning=FALSE}
+barcode_matching_merged <-barcode_matching_merged[order(barcode_matching_merged$numReads, decreasing = T),]
+barcode_matching_merged_dedup <- barcode_matching_merged[!duplicated(barcode_matching_merged$BM),]
+#row.names(matched_locations)<-matched_barcodes$V1
+o<-table(barcode_matching_merged_dedup$BD)
+plotHammingBM <- ggplot(data.frame(o),aes(as.numeric(names(o)),o))&
+  geom_bar(stat="identity", fill = "#FFDB6D", color = "#C4961A",
+           width=0.8)&
+  xlab("Hamming distance")&
+  ylab("Number of beadbarcodes")&
+  ggtitle("Hamming distance (beadbarcodes)")&
+  scale_x_continuous(breaks=0:len_barcode, labels=0:len_barcode, limits = c(-0.4,len_barcode+0.4))&
+  scale_y_continuous(breaks = round(seq(0, max(o), length.out=5),0))&
+  theme_bw()&
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=10),
+        axis.title=element_text(size=12),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 5, r = 0, b = 0, l = 0)))
+print(plotHammingBM)
+```
+
+<details>
+  <summary>**Per Sequenced Barcode Hamming Distance Distribution**</summary>
+</details>
+```{r hamming dist sequenced barcodes, fig.align='center',echo=FALSE, fig.width=6, fig.height=4, echo=FALSE, results='hide', warning=FALSE}
+o<-table(barcode_matching_details$BD)
+plotHammingBB <- ggplot(data.frame(o),aes(as.numeric(names(o)),o))&
+  geom_bar(stat="identity", fill = "#FFDB6D", color = "#C4961A",
+           width=0.8)&
+  xlab("Hamming distance")&
+  ylab("Number of sequenced barcodes")&
+  ggtitle("Hamming distance (sequenced barcodes)")&
+  scale_x_continuous(breaks=0:len_barcode, labels=0:len_barcode, limits = c(-0.4,len_barcode+0.4))&
+  scale_y_continuous(breaks = round(seq(0, max(o), length.out=5),0))&
+  theme_bw()&
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=10),
+        axis.title=element_text(size=12),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 5, r = 0, b = 0, l = 0)))
+print(plotHammingBB)
+```
+
+## Per Base Composition of R1
+<details>
+  <summary>**For Reads with Properly Structured R1**</summary>
+  	<p>Beadbarcode and UMI bases should have ~25% of each base, whereas UP and polyT bases should have ~100% of the expected base at each position.</p>
+</details>
+```{r r1_properStructure, fig.align="center", fig.width=10, fig.height=4, echo=FALSE, results='hide', warning=FALSE}
+pal_perbase <- c("#d1495b", "#edae49", "#66a182", "#2e4057", alpha("gray",0.3))
+read1 <- read1_properStructure
+total=read1$A+read1$T+read1$C+read1$G+read1$N
+read1_pct<-100*read1/total
+len_read1<-nrow(read1_pct)
+read1_pct.long <- reshape(data=read1_pct, direction = "long", 
+                          varying = c("A","T","C","G","N"), 
+                          times = c("A","T","C","G","N"), 
+                          v.name=c("value"))
+
+plotProperSTRUCTURE <- ggplot(read1_pct.long, aes(id, value, colour = time))&
+  geom_point(aes(colour = factor(time, levels = c("A","T","C","G","N"))))&
+  xlab("First n base of read1")&
+  ylab("% Reads proper structure")&
+  ggtitle("Read1 with proper structure")&
+  scale_x_continuous(breaks=seq(1, len_read1, by=2), labels=seq(1, len_read1, by=2))&
+  scale_y_continuous(breaks=seq(0, 100, by=25), labels=seq(0, 100, by=25))&
+  theme_bw()&
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=10),
+        axis.title=element_text(size=12),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        legend.position=c(0.04,0.85),
+        legend.key = element_rect(colour = NA, fill = NA),
+        legend.key.height= unit(0.4, 'cm'),
+        legend.key.width= unit(0.1, 'cm'),
+        legend.background=element_rect(colour = NA, fill= NA),
+        legend.title=element_blank(),
+	legend.text=element_text(size=10))&
+        scale_color_manual(values = pal_perbase)
+print(plotProperSTRUCTURE)
+```
+
+<details>
+  <summary>**For Reads with Improperly Structured R1**</summary>
+	<p>UP section usually gradually loses its expected structure.</p>
+</details>
+```{r r1_improperStructure, fig.align="center", fig.width=10, fig.height=4, echo=FALSE, results='hide', warning=FALSE}
+read1 <- read1_improperStructure
+total=read1$A+read1$T+read1$C+read1$G+read1$N
+read1_pct<-100*read1/total
+len_read1<-nrow(read1_pct)
+read1_pct.long <- reshape(data=read1_pct, direction = "long", 
+                          varying = c("A","T","C","G","N"), 
+                          times = c("A","T","C","G","N"), 
+                          v.name=c("value"))
+
+plotImproperSTRUCTURE <- ggplot(read1_pct.long, aes(id, value, colour = time))&
+  geom_point(aes(colour = factor(time, levels = c("A","T","C","G","N"))))&
+  xlab("First n base of read1")&
+  ylab("% Reads improper structure")&
+  ggtitle("Read1 with improper structure")&
+  scale_x_continuous(breaks=seq(1, len_read1, by=2), labels=seq(1, len_read1, by=2))&
+  scale_y_continuous(breaks=seq(0, 100, by=25), labels=seq(0, 100, by=25), limits=c(0,100))&
+  theme_bw()&
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text=element_text(size=10),
+        axis.title=element_text(size=12),
+        plot.title = element_text(hjust = 0.5),
+        axis.title.y = element_text(margin = margin(t = 0, r = 5, b = 0, l = 0)),
+        axis.title.x = element_text(margin = margin(t = 5, r = 0, b = 0, l = 0)),
+        legend.position=c(0.04,0.85),
+        legend.key = element_rect(colour = NA, fill = NA),
+        legend.key.height= unit(0.4, 'cm'),
+        legend.key.width= unit(0.1, 'cm'),
+        legend.background=element_rect(colour = NA, fill= NA),
+        legend.title=element_blank(),
+	legend.text=element_text(size=10))&
+        scale_color_manual(values = pal_perbase)
+print(plotImproperSTRUCTURE)
+```
+
+## Spatial Map of Cell Types
+<details>
+  <summary>**Clusters on Dimension Reduced and Spatial Spaces**</summary>
+	<p>Dimension reduction (left) and spatial location (right) of beads colored by their cluster assignment. Dimension reduction was done by UMAP (Uniform Manifold Approximation and Projection) on top 30 PCs and clusters were identified via unsupervised graph-based clustering method.</p>
+</details>
+
+```{r Cluster_SPATIAL_combined, fig.align="left", echo=FALSE, fig.width=39*m, fig.height=18*m}
+qual_col_pals = brewer.pal.info[brewer.pal.info$category %in% c('qual','seq'),]
+col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+plotUMAP <- DimPlot(seuratO, reduction = "umap", group.by = "SCT_snn_res.0.2", label = T, cols = col_vector, pt.size = 1.5, label.size = 18*n, repel = TRUE, raster=raster)&
+  xlab("UMAP1")&ylab("UMAP2")&ggtitle("")&
+  theme(plot.title = element_text(hjust = 0.5, face="bold",size=50*n),
+        axis.title.x =element_text(size=50*n, margin = margin(t = 10)), 
+	axis.title.y =element_text(size=50*n, margin = margin(r = 10)),
+	axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+	axis.ticks.y = element_blank(),
+        axis.text.y = element_blank(),
+	legend.position="none",
+	axis.line=element_line(size=2))
+
+plotSPATIAL <- DimPlot(seuratO, group.by = "SCT_snn_res.0.2", reduction = "SPATIAL", cols = col_vector, pt.size = 1.5, raster=raster)&
+  NoAxes()&
+  ggtitle("")&
+  guides(color = guide_legend(override.aes = list(size = 10*n)))&
+  theme(plot.title = element_text(hjust = 0.5, face="bold",size=50*n), 
+	axis.text=element_text(size=100*n),
+	legend.text=element_text(size=50*n), 
+	legend.key.size = unit(2*n, "cm"),)&
+  labs(fill = "")&coord_fixed()
+
+plotUMAP_SPATIAL=plotUMAP+plotSPATIAL
+plotUMAP_SPATIAL
+```
+
+```{r plotSPATIAL_RCTD, fig.align="left", echo=FALSE, fig.width=18, fig.height=18}
+if(params$seekerexplorer == "rctd"){
+	qual_col_pals = brewer.pal.info[brewer.pal.info$category == 'qual',]
+	col_vector = unlist(mapply(brewer.pal, qual_col_pals$maxcolors, rownames(qual_col_pals)))
+	plotSPATIAL_RCTD <- DimPlot(seuratO, group.by = "first_type", reduction = "SPATIAL", cols = col_vector, pt.size = 2)&
+  	NoAxes()&
+ 	ggtitle("")&
+  	guides(color = guide_legend(override.aes = list(size = 10)))&
+  	theme(plot.title = element_text(hjust = 0.5, face="bold",size=50),
+        axis.text=element_text(size=100),
+        legend.text=element_text(size=50),
+        legend.key.size = unit(2, "cm"),)&
+  	labs(fill = "")&coord_fixed()
+	plotSPATIAL_RCTD
+}
+```
+
+## Variable Genes
+<details>
+  <summary>**Top Cluster Defining Genes**</summary>
+  	<p>One-to-all Wilcoxon Rank Sum test was used to identify cluster defining genes. Cluster IDs are consistent with spatial map above. Shown are top 5 or all genes for each cluster that passed threshold, whichever fewer.</p>
+</details>
+
+```{r Top_differentially_expressed_genes_per_cluster, fig.align="left", fig.width=12, fig.height=5, echo=FALSE, warning=FALSE}
+if(is.logical(cluster_markers)){
+           print("No variable feature identified")
+}else{
+        markers_bycluster<-gen_markers_bycluster(cluster_markers)
+        plotDOT <- dotplot_topn(seuratO, markers_bycluster, n=5, group.by="SCT_snn_res.0.2")
+	plotDOT
+}
+```
+
+<details>
+  <summary>**Top 10 Spatially Variable Features**</summary>
+  	<p>Moran's I was used to measure spatial variability.</p>
+</details>
+
+```{r Top_spatially_variable_features, fig.align="left", fig.width=15*m, fig.height=8*m, echo=FALSE, message=FALSE, warning=FALSE}
+DefaultAssay(seuratO)<-"SCT"
+plotSPATIALFEATURE <- SpatialFeaturePlot(seuratO, features = rownames(spatial_markers)[1:10], ncol = 5, alpha = c(0.1, 1), max.cutoff = "q95", slot = "data", pt.size.factor = 1.6/m)&
+  theme(legend.title = element_text(colour="black", size = 12*m, face = "italic"),
+        legend.text = element_text(color="black", size=rel(0.8*m)),
+        legend.key.height = unit(0.7*n, 'cm'),
+        legend.key.width = unit(0.7*n, 'cm'),
+        plot.title = element_text(color="black",hjust=0.5,vjust=0.5,size=rel(1*n), face="italic"))
+plotSPATIALFEATURE
+```
